@@ -1,0 +1,85 @@
+#!/bin/bash
+
+REPO=bootoption/bootoption
+REPO_DIR=bootoption.git
+CONFIGURATION=release
+PREFIX=usr/local
+COMPONENTS_DIR=Packages
+
+cd "$(dirname "$0")" || exit
+
+rm -rf "$REPO_DIR"
+
+if [[ $1 ]]; then
+	TAG="$1"
+else
+	DATA=$(curl -Ls https://api.github.com/repos/"$REPO"/releases/latest | grep tag_name | tr -d '" ,')
+	TAG=${DATA/tag_name:/}
+fi
+
+git clone --depth 1 https://github.com/"$REPO".git -b "$TAG" "$REPO_DIR" || exit
+
+pushd "$REPO_DIR" || exit
+swift build --disable-sandbox -c "$CONFIGURATION" || exit
+popd || exit
+
+rm -rf "$COMPONENTS_DIR"
+mkdir -p "$COMPONENTS_DIR"
+
+# Binary Package
+
+BINARY_PKG_ID=org.bootoption.bootoption-binary
+BINARY_PKG_NAME=Bootoption
+BINARY_PKG_ROOT_DIR="$COMPONENTS_DIR"/"$BINARY_PKG_NAME"
+
+mkdir -p "$BINARY_PKG_ROOT_DIR"/"$PREFIX"/bin
+cp "$REPO_DIR"/.build/"$CONFIGURATION"/bootoption "$BINARY_PKG_ROOT_DIR"/"$PREFIX"/bin/bootoption || exit
+pkgbuild --identifier "$BINARY_PKG_ID" --version "$TAG" --root "$BINARY_PKG_ROOT_DIR" "$COMPONENTS_DIR"/"$BINARY_PKG_NAME".pkg || exit
+
+# Manual Package
+
+MANUAL_PKG_ID=org.bootoption.bootoption-manual
+MANUAL_PKG_NAME=BootoptionManual
+MANUAL_PKG_ROOT_DIR="$COMPONENTS_DIR"/"$MANUAL_PKG_NAME"
+
+mkdir -p "$MANUAL_PKG_ROOT_DIR"/"$PREFIX"/man
+cp -r "$REPO_DIR"/man/* "$MANUAL_PKG_ROOT_DIR"/"$PREFIX"/man || exit
+pkgbuild --identifier "$MANUAL_PKG_ID" --version "$TAG" --root "$MANUAL_PKG_ROOT_DIR" "$COMPONENTS_DIR"/"$MANUAL_PKG_NAME".pkg || exit
+
+# Product Package
+
+DISTRIBUTION_XML=Distribution.xml
+RESOURCES_DIR=Resources
+PRODUCT_NAME=Bootoption
+OS_VERSION_MIN=10.14
+BINARY_CHOICE_TITLE="Bootoption command-line tool"
+MANUAL_CHOICE_TITLE="Bootoption manual page"
+
+{
+	printf '<?xml version="1.0" encoding="utf-8" standalone="no"?>'
+	printf '<installer-gui-script minSpecVersion="2">'
+	printf '<allowed-os-versions>'
+	printf '<os-version min="%s"/>' "$OS_VERSION_MIN"
+	printf '</allowed-os-versions>'
+	printf '<welcome file="welcome.rtf" mime-type="text/rtf"/>'
+	printf '<title>%s %s</title>' "$PRODUCT_NAME" "$TAG"
+	printf '<pkg-ref id="%s" version="%s">%s.pkg</pkg-ref>' "$BINARY_PKG_ID" "$TAG" "$BINARY_PKG_NAME"
+	printf '<pkg-ref id="%s" version="%s">%s.pkg</pkg-ref>' "$MANUAL_PKG_ID" "$TAG" "$MANUAL_PKG_NAME"
+	printf '<options customize="true" require-scripts="false"/>'
+	printf '<choices-outline>'
+	printf '<line choice="binary"/>'
+	printf '<line choice="manual"/>'
+	printf '</choices-outline>'
+	printf '<choice id="binary" title="%s">' "$BINARY_CHOICE_TITLE"
+	printf '<pkg-ref id="%s"/>' "$BINARY_PKG_ID"
+	printf '</choice>'
+	printf '<choice id="manual" title="%s">' "$MANUAL_CHOICE_TITLE"
+	printf '<pkg-ref id="%s"/>' "$MANUAL_PKG_ID"
+	printf '</choice>'
+	printf '</installer-gui-script>'
+	printf '\n'
+} > "$DISTRIBUTION_XML"
+
+xmllint "$DISTRIBUTION_XML" || exit
+
+productbuild --resources "$RESOURCES_DIR" --distribution "$DISTRIBUTION_XML" --package-path "$COMPONENTS_DIR" "${PRODUCT_NAME}-${TAG}.pkg"
